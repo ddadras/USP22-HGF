@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env/
+
+# Data
+data/
+!data/.keep
+
+# Results
+results_report/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

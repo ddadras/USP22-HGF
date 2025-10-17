@@ -1,0 +1,13 @@
+# requirements.txt
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.5.2
+matplotlib==3.9.2
+opencv-python==4.10.0.84
+Pillow==10.4.0
+reportlab==4.2.5
+torch==2.5.1+cu124         # replace +cu124 if a cu130 build exists later
+torchvision==0.20.1+cu124
+torchaudio==2.5.1+cu124
+# To ensure deterministic results and CV folds:
+tqdm==4.66.5
