@@ -13,5 +13,5 @@ This repository performs contour-filtered image classification using **5-fold cr
 
 ### 1️⃣ Clone
 ```bash
-git clone https://github.com/Sworft/USP22-HGF
+git clone https://github.com/ddadras/USP22-HGF
 cd USP22-HGF
