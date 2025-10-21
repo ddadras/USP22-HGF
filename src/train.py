@@ -1,5 +1,4 @@
-import torch
-import torch.optim as optim
+# train.py
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import label_binarize
@@ -8,7 +7,6 @@ from sklearn.metrics import (
     roc_auc_score, roc_curve, auc, average_precision_score,
     matthews_corrcoef, cohen_kappa_score, balanced_accuracy_score
 )
-import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 import pandas as pd
 import os
@@ -22,18 +20,25 @@ import copy
 from utils import *
 
 # === CONFIG ===
-DATA_DIR = '../data/t2_cropped'
-OUTPUT_DIR = '../results_report'
+DATA_DIR = 'data/TRAINING'
+OUTPUT_DIR = 'results_report'
 BATCH_SIZE = 64
 NUM_EPOCHS = 50
 K_FOLDS = 5
 PATIENCE = 5
+DROPOUT_RATE = 0.5
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 1e-4
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print("Using device:", DEVICE)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-dataset = ContourImageFolder(DATA_DIR, transform=ContourTransform())
+dataset = ContourImageFolder(DATA_DIR, transform=None)
+train_transform = ContourTransform(augment=True)
+val_transform = ContourTransform(augment=False)
+
 class_names = dataset.classes
 NUM_CLASSES = len(class_names)
 print(f"Detected {NUM_CLASSES} classes: {class_names}")
@@ -47,16 +52,27 @@ aggregate_metrics = {cls: {"precision": [], "recall": [], "f1": []} for cls in c
 roc_curves = []
 train_curves = []
 val_curves = []
+fig = plt.figure(figsize=(3.15, 3.15), dpi=600)
 
 for fold, (train_idx, val_idx) in enumerate(kfold.split(np.zeros(len(labels)), labels)):
     print(f"\n=== Fold {fold + 1}/{K_FOLDS} ===")
 
-    train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE)
+    train_subset = Subset(dataset, train_idx)
+    val_subset = Subset(dataset, val_idx)
 
-    # model = get_resnet18_model(NUM_CLASSES).to(DEVICE)
-    model = get_resnet34_model(NUM_CLASSES, dropout_rate=0.3).to(DEVICE)
-    optimizer = optim.Adam(model.fc.parameters(), lr=1e-3)
+    # Assign transforms for each
+    train_subset.dataset.custom_transform = train_transform
+    val_subset.dataset.custom_transform = val_transform
+
+    train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE)
+
+    model = get_resnet34_model(NUM_CLASSES, dropout_rate=DROPOUT_RATE, partial_unfreeze=True).to(DEVICE)
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+    )
+
     criterion = nn.CrossEntropyLoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=3
@@ -135,7 +151,6 @@ for fold, (train_idx, val_idx) in enumerate(kfold.split(np.zeros(len(labels)), l
         'optimizer_state_dict': optimizer.state_dict(),
         'val_loss': best_val_loss,
         'class_names': class_names
-    # }, os.path.join(OUTPUT_DIR, f"resnet18_fold{fold + 1}.pth"))
     }, os.path.join(OUTPUT_DIR, f"resnet34_fold{fold + 1}.pth"))
 
     # --- CLASSIFICATION REPORT ---
@@ -179,18 +194,9 @@ for fold, (train_idx, val_idx) in enumerate(kfold.split(np.zeros(len(labels)), l
         aggregate_metrics[cls]["recall"].append(report[cls]["recall"])
         aggregate_metrics[cls]["f1"].append(report[cls]["f1-score"])
 
-    # # --- CONFUSION MATRIX ---
-    # disp = ConfusionMatrixDisplay(cm, display_labels=class_names)
-    # disp.plot(cmap="Blues", values_format='d')
-    # plt.title(f'Confusion Matrix - Fold {fold + 1}')
-    # plt.xticks(rotation=45)
-    # cm_path = os.path.join(OUTPUT_DIR, f'confusion_fold{fold + 1}.png')
-    # plt.savefig(cm_path, bbox_inches='tight')
-    # plt.close()
-
     # --- ROC CURVES ---
+
     if NUM_CLASSES == 2:
-        # fpr, tpr, _ = roc_curve(y_true_bin[:, 0], y_prob[:, 0])
         fpr, tpr, _ = roc_curve(y_true, y_prob[:, 1])
         plt.plot(fpr, tpr, label=f'Fold {fold + 1} (AUC={roc_auc:.3f})')
         roc_curves.append((fpr, tpr, roc_auc))
@@ -212,6 +218,7 @@ for fold, (train_idx, val_idx) in enumerate(kfold.split(np.zeros(len(labels)), l
     val_curves.append(val_losses_per_fold)
 
 # === ROC SUMMARY ===
+
 plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
 plt.title("ROC Curves per Fold")
@@ -221,6 +228,7 @@ plt.savefig(roc_all_path, bbox_inches='tight')
 plt.close()
 
 # Mean ROC
+fig = plt.figure(figsize=(3.15, 3.15), dpi=600)
 all_fpr = np.unique(np.concatenate([fpr for fpr, _, _ in roc_curves]))
 mean_tpr = np.zeros_like(all_fpr)
 for fpr, tpr, _ in roc_curves:
@@ -237,13 +245,14 @@ plt.savefig(mean_roc_path, bbox_inches='tight')
 plt.close()
 
 
-# mean learning curves
+# Mean learning curves
 def mean(a):
     return sum(a) / len(a)
 
+
 mean_train = list(map(mean, zip(*train_curves)))
 mean_val = list(map(mean, zip(*val_curves)))
-fg = plt.figure(layout='constrained')
+fg = plt.figure(layout='constrained', figsize=(6.3, 3.15), dpi=600)
 ax = fg.gca()
 ax.plot(range(1, len(mean_train) + 1), mean_train, label='Train Loss')
 ax.plot(range(1, len(mean_val) + 1), mean_val, label='Validation Loss')
@@ -258,17 +267,25 @@ plt.close()
 
 # === AGGREGATED CONFUSION MATRICES ===
 disp = ConfusionMatrixDisplay(aggregate_cm, display_labels=class_names)
-disp.plot(cmap='Blues', values_format='d')
+disp.plot(cmap='Blues', values_format='d', colorbar=False)
 plt.title('Aggregated Confusion Matrix (Summed)')
 agg_cm_path = os.path.join(OUTPUT_DIR, "aggregated_confusion.png")
+disp.ax_.set_xticks([])
+disp.ax_.set_xticklabels([])
+disp.ax_.set_xlabel('')
+disp.ax_.set_ylabel('')
 plt.savefig(agg_cm_path, bbox_inches='tight')
 plt.close()
 
 norm_cm = aggregate_cm.astype(float) / aggregate_cm.sum(axis=1, keepdims=True)
 disp = ConfusionMatrixDisplay(norm_cm, display_labels=class_names)
-disp.plot(cmap='Blues', values_format='.2f')
+disp.plot(cmap='Blues', values_format='.2f', colorbar=False)
 plt.title('Normalized Confusion Matrix (Average per class)')
 norm_cm_path = os.path.join(OUTPUT_DIR, "normalized_confusion.png")
+disp.ax_.set_xticks([])
+disp.ax_.set_xticklabels([])
+disp.ax_.set_xlabel('')
+disp.ax_.set_ylabel('')
 plt.savefig(norm_cm_path, bbox_inches='tight')
 plt.close()
 
@@ -323,17 +340,17 @@ story.append(Spacer(1, 20))
 
 story.append(Paragraph("<b>ROC Curves</b>", styles['Heading2']))
 for img in [roc_all_path, mean_roc_path]:
-    story.append(RLImage(img, width=400, height=300))
+    story.append(RLImage(img, width=315, height=315))
     story.append(Spacer(1, 10))
 
 story.append(Paragraph("<b>Learning Curve</b>", styles['Heading2']))
 lc_path = os.path.join(OUTPUT_DIR, f'mean_learning_curve.png')
-story.append(RLImage(lc_path, width=400, height=300))
+story.append(RLImage(lc_path, width=315, height=315))
 story.append(Spacer(1, 10))
 
 story.append(Paragraph("<b>Confusion Matrices</b>", styles['Heading2']))
 for img in [agg_cm_path, norm_cm_path]:
-    story.append(RLImage(img, width=400, height=300))
+    story.append(RLImage(img, width=630, height=315))
     story.append(Spacer(1, 10))
 
 doc.build(story)
